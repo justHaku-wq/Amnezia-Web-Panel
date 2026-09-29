@@ -103,6 +103,14 @@ AWG_QUICK_FORCE_USERSPACE_PATCH = (
     ' && grep -q WG_FORCE_USERSPACE /usr/bin/awg-quick\n'
 )
 
+# AllowedIPs of generated client configs. Always both families: the official
+# Amnezia client enables site-based split tunneling only when it finds exactly
+# "0.0.0.0/0" and "::/0" here, and otherwise reports split tunneling as
+# enforced by the server. On an IPv4-only tunnel ::/0 routes the client's IPv6
+# into the tunnel where it is dropped (apps fall back to IPv4) instead of
+# leaking around the VPN - the same as configs from the official installer.
+CLIENT_ALLOWED_IPS = "0.0.0.0/0, ::/0"
+
 # Entry side of an exit-node link: a second WireGuard interface inside the
 # protocol container plus policy routing that sends the client subnet through
 # it. State is file-driven - exit0.conf present means "linked" - so the same
@@ -2908,10 +2916,8 @@ AllowedIPs = {allowed_ips}
                     continue
                 config_lines.append(f"{config_key} = {val}")
 
-        # Route ::/0 only when the client actually holds an IPv6 address:
-        # claiming the IPv6 default route on an IPv4-only tunnel blackholes
-        # the client's own native IPv6.
-        peer_allowed_ips = "0.0.0.0/0, ::/0" if client_ipv6 else "0.0.0.0/0"
+        # See CLIENT_ALLOWED_IPS: both families even on IPv4-only tunnels.
+        peer_allowed_ips = CLIENT_ALLOWED_IPS
 
         client_config = "[Interface]\n" + "\n".join(config_lines) + f"""
 
@@ -3011,8 +3017,8 @@ PersistentKeepalive = 25
                     continue
                 config_lines.append(f"{config_key} = {val}")
 
-        # See the client-creation path: ::/0 only on dual-stack tunnels.
-        peer_allowed_ips = "0.0.0.0/0, ::/0" if client_ipv6 else "0.0.0.0/0"
+        # See CLIENT_ALLOWED_IPS: both families even on IPv4-only tunnels.
+        peer_allowed_ips = CLIENT_ALLOWED_IPS
 
         config = "[Interface]\n" + "\n".join(config_lines) + f"""
 
