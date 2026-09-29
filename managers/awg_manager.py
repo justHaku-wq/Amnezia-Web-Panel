@@ -281,7 +281,10 @@ def normalize_special_junk(values):
     return result
 
 # Connection flood monitoring (P2P/torrent detection)
-CONN_WARN_THRESHOLD = 600    # simultaneous connections per peer that trigger a warning
+# 600 triggers false positives on peers whose OS downloads updates over P2P
+# (Windows Delivery Optimization opens ~500-800 connections), so the bar
+# sits above that range at 900.
+CONN_WARN_THRESHOLD = 900    # simultaneous connections per peer that trigger a warning
 CONN_WARN_COOLDOWN = 3600    # min seconds between two recorded warnings for the same peer
 CONN_WARN_MAX_EVENTS = 5     # how many recent warnings are kept per peer
 
@@ -2114,12 +2117,44 @@ x_exit_sync() {
         if batch is not None:
             out = batch['clients']
         else:
+            # A container known to be stopped has nothing to read: answer
+            # empty WITHOUT an exec, instead of failing docker exec on every
+            # poll and spamming the log with 'exit code 1'.
+            try:
+                state_fn = getattr(self.ssh, 'docker_container_state', None)
+                st = state_fn(container_name) if state_fn else None
+            except Exception:
+                st = None
+            if st and st[0] and not st[1]:
+                return []
             clients_table_path = self._clients_table_path()
             out, err, code = self.ssh.run_sudo_command(
                 f"docker exec -i {container_name} cat {clients_table_path} 2>/dev/null"
             )
             if code != 0:
-                return []
+                # Never let a failed read masquerade as an empty table: that
+                # is how a transient docker exec failure once painted every
+                # peer as 'External'. Distinguish the honest empty cases.
+                state = None
+                try:
+                    state_fn = getattr(self.ssh, 'docker_container_state', None)
+                    if state_fn:
+                        state = state_fn(container_name)
+                except Exception:
+                    state = None
+                if state and not state[1]:
+                    # Container exists but is stopped: nothing to read, and
+                    # the UI already shows the card as stopped.
+                    return []
+                # Running (or state unknown): probe the file itself.
+                _, _, fcode = self.ssh.run_sudo_command(
+                    f"docker exec -i {container_name} test -f {clients_table_path}")
+                if fcode == 0:
+                    raise RuntimeError(
+                        f"clientsTable exists in {container_name} but could "
+                        f"not be read (docker exec exit {code}): "
+                        f"{err or 'no output'}")
+                return []  # fresh instance: no clientsTable yet
 
         if not out.strip():
             return []
@@ -2127,6 +2162,14 @@ x_exit_sync() {
         try:
             data = json.loads(out)
             if isinstance(data, list):
+                # Diagnostics for the intermittent 'External instead of names'
+                # glitch: log which container the table came from, via which
+                # path, and how many records it held. When a response shows
+                # N named + M External, this line tells whether the read
+                # itself returned a wrong/partial table.
+                logger.info(
+                    f"clientsTable {container_name}: {len(data)} records, "
+                    f"{len(out)} bytes (via {'prefetch batch' if batch is not None else 'direct read'})")
                 return data
             elif isinstance(data, dict):
                 # Migration from old format
@@ -2138,6 +2181,9 @@ x_exit_sync() {
                             'clientName': info.get('clientName', 'Unknown'),
                         }
                     })
+                logger.info(
+                    f"clientsTable {container_name}: {len(result)} records "
+                    f"(legacy dict format, via {'prefetch batch' if batch is not None else 'direct read'})")
                 return result
         except json.JSONDecodeError:
             if batch is not None:
@@ -2597,6 +2643,7 @@ done < "$BW"
                 client['userData'] = user_data
 
         # Pick up peers from conf that are NOT in clientsTable (created via native Amnezia app)
+        conf_peers = {}
         try:
             conf_peers = self._parse_peers_from_config(protocol_type)
             for pub_key, peer_info in conf_peers.items():
@@ -2629,6 +2676,11 @@ done < "$BW"
                 })
         except Exception as e:
             logger.warning(f'get_clients: failed to parse conf peers: {e}')
+        external_added = sum(1 for c in clients_table if c.get('userData', {}).get('externalClient'))
+        logger.info(
+            f"get_clients({protocol_type}): table={len(known_ids)}, "
+            f"conf peers total={len(conf_peers)}, "
+            f"conf-only External appended={external_added}")
 
         # Connection flood monitoring: attach the latest snapshot written by
         # the background collector (collect_conn_stats). Only if the snapshot
@@ -3557,7 +3609,14 @@ AllowedIPs = {allowed_ips}
                     # The official Amnezia client installs AWG 3.x into the
                     # amnezia-awg2 container, so only the config tells 2.0 and 3.x apart.
                     info['header_protection'] = bool(info['awg_params'].get('header_protection_key'))
-                    info['clients_count'] = len(self._get_clients_table(protocol_type))
+                    # Count ALL peers, not only clientsTable rows: peers that
+                    # exist in awg0.conf but not in the table (shown as
+                    # 'External' in the list) are still real connections.
+                    known = {c.get('clientId')
+                             for c in self._get_clients_table(protocol_type)}
+                    conf_peers = self._parse_peers_from_config(protocol_type)
+                    info['clients_count'] = len(known | set(conf_peers))
+                    info['external_count'] = len(set(conf_peers) - known)
                 except Exception as e:
                     info['error'] = str(e)
 

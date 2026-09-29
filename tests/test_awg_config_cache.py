@@ -82,6 +82,10 @@ class FakeSSH:
                 return self.files[m.group(1)], '', 0
             return '', 'No such file or directory', 1
 
+        m = re.search(r"docker exec -i \S+ test -f (\S+)", command)
+        if m:
+            return '', '', 0 if m.group(1) in self.files else 1
+
         return '', '', 0
 
 
