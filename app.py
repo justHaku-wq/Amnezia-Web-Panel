@@ -41,7 +41,7 @@ try:
 except ImportError:
     CaptchaGenerator = None
 
-from managers.ssh_manager import SSHManager
+from managers.ssh_manager import SSHManager, set_known_hosts_file
 from managers.awg_manager import AWGManager, normalize_special_junk
 from managers.xray_manager import XrayManager
 from managers.wireguard_manager import WireGuardManager
@@ -161,6 +161,9 @@ else:
 DATA_FILE = os.path.abspath(os.path.expanduser(
     os.environ.get('DATA_FILE') or os.path.join(application_path, 'data.json')
 ))
+# Pinned SSH host keys live beside data.json, on the same persistent volume.
+KNOWN_HOSTS_FILE = os.path.join(os.path.dirname(DATA_FILE), 'known_hosts')
+set_known_hosts_file(KNOWN_HOSTS_FILE)
 CURRENT_VERSION = "v1.7.1"
 
 # Custom protocol instance names: the rename modal caps input at 64 chars.

@@ -5,6 +5,8 @@ Replicates the ServerController logic from the AmneziaVPN client.
 
 import paramiko
 import io
+import os
+import tempfile
 import time
 import threading
 import logging
@@ -12,6 +14,92 @@ import shlex
 from contextlib import nullcontext
 
 logger = logging.getLogger(__name__)
+
+# Trust-on-first-use pinning of server host keys. app.py points this at a
+# known_hosts file next to data.json; None keeps the pins in memory only.
+known_hosts_file = None
+_known_hosts_lock = threading.Lock()
+_memory_pins = paramiko.HostKeys()
+
+
+def set_known_hosts_file(path):
+    global known_hosts_file
+    known_hosts_file = path
+
+
+class HostKeyChangedError(paramiko.BadHostKeyException):
+    """The server presented a host key other than the one pinned for it."""
+
+    def __init__(self, hostname, got_key, expected_key, pins_path):
+        super().__init__(hostname, got_key, expected_key)
+        self.pins_path = pins_path
+
+    def __str__(self):
+        reset = (f"delete its line from {self.pins_path}" if self.pins_path
+                 else "restart the panel")
+        return (
+            f"SSH host key of {self.hostname} changed: got "
+            f"{self.key.get_name()} {self.key.fingerprint}, pinned "
+            f"{self.expected_key.get_name()} {self.expected_key.fingerprint}. "
+            f"Refusing to connect: the server may be spoofed. If it was "
+            f"reinstalled, {reset} and connect again.")
+
+
+def _load_pins():
+    if not known_hosts_file:
+        return _memory_pins
+    pins = paramiko.HostKeys()
+    if os.path.exists(known_hosts_file):
+        pins.load(known_hosts_file)
+    return pins
+
+
+def _save_pins(pins):
+    if not known_hosts_file:
+        return
+    directory = os.path.dirname(known_hosts_file) or '.'
+    fd, tmp_path = tempfile.mkstemp(prefix='.known_hosts-', dir=directory)
+    os.close(fd)
+    try:
+        pins.save(tmp_path)
+        os.replace(tmp_path, known_hosts_file)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+class PinnedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+    """Pin a server's host key on the first connect, refuse any other later.
+
+    The client never loads host keys itself, so paramiko consults this policy
+    on every connect, before authentication: a spoofed server is dropped
+    before it can see the password or a key signature.
+    """
+
+    def missing_host_key(self, client, hostname, key):
+        with _known_hosts_lock:
+            pins = _load_pins()
+            pinned = pins.lookup(hostname)
+            if pinned is not None:
+                expected = pinned.get(key.get_name())
+                if expected != key:
+                    raise HostKeyChangedError(
+                        hostname, key,
+                        expected or next(iter(pinned.values())),
+                        known_hosts_file)
+                return
+            pins.add(hostname, key.get_name(), key)
+            try:
+                _save_pins(pins)
+            except OSError as e:
+                logger.error(
+                    f"Could not save the pinned SSH host key of {hostname}: {e}")
+        logger.info(
+            f"Pinned SSH host key of {hostname}: "
+            f"{key.get_name()} {key.fingerprint}")
 
 
 def _conn_lock_of(obj):
@@ -121,7 +209,7 @@ class SSHManager:
     def _connect_once(self):
         """Single TCP+SSH handshake attempt (caller holds _conn_lock)."""
         self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        self.client.set_missing_host_key_policy(PinnedHostKeyPolicy())
 
         kwargs = {
             'hostname': self.host,
@@ -147,7 +235,13 @@ class SSHManager:
         elif self.password:
             kwargs['password'] = self.password
 
-        self.client.connect(**kwargs)
+        try:
+            self.client.connect(**kwargs)
+        except Exception:
+            # Paramiko keeps the transport open when the host key or the
+            # login is rejected; stop talking to that server right away.
+            self._disconnect_locked()
+            raise
         # Keep NAT/stateful firewalls from silently dropping the idle
         # long-lived transport between command bursts.
         try:

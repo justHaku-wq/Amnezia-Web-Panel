@@ -30,6 +30,7 @@ coverage.xml
 
 # User data
 data.json
+known_hosts
 .DS_Store
 
 # IDEs
