@@ -16,6 +16,8 @@ import re
 from collections import defaultdict
 from datetime import datetime
 
+from managers.awg_manager import DEFAULT_LINK_MTU, transport_overhead
+
 logger = logging.getLogger(__name__)
 
 EXIT_MTU_LIMIT = 1420          # default and ceiling of the transit MTU (exit0/transit0)
@@ -51,6 +53,14 @@ def transit_mtu(data):
     except (TypeError, ValueError):
         return EXIT_MTU_LIMIT
     return max(TRANSIT_MTU_MIN, min(EXIT_MTU_LIMIT, value))
+
+
+def link_transit_mtu(data, awg_params=None):
+    """Transit MTU for one link: the setting, capped so that the largest
+    packet of this exit's obfuscation (S4 rides on every data packet) still
+    fits a plain 1500-byte path. Narrower paths need a lower setting."""
+    ceiling = DEFAULT_LINK_MTU - transport_overhead(awg_params)
+    return max(TRANSIT_MTU_MIN, min(transit_mtu(data), ceiling))
 
 
 def peer_id_for(entry_uid, protocol):
@@ -263,7 +273,9 @@ class ExitLinkService:
             except (TypeError, ValueError):
                 mtu = 0
             ipv6 = bool(await asyncio.to_thread(awg._get_subnet_ipv6_ip, protocol))
-            link_mtu = transit_mtu(data)
+            # The exit record carries the obfuscation it was installed with;
+            # add_peer below returns what its config actually says.
+            link_mtu = link_transit_mtu(data, exit_rec.get('awg_params'))
             if mtu > link_mtu and not force:
                 raise ExitLinkError('exit_mtu_too_big',
                                     f'Client MTU {mtu} exceeds the link MTU {link_mtu}; '
@@ -286,6 +298,7 @@ class ExitLinkService:
             exit_manager = await self._exit_manager(exit_srv)
             name = f"{entry.get('name') or entry.get('host', '')} / {self.protocol_display_name(protocol)}"
             peer = await asyncio.to_thread(exit_manager.add_peer, peer_id, name, entry_pub)
+            link_mtu = min(link_mtu, link_transit_mtu(data, peer.get('awg_params')))
             # Both ends must agree: an exit still at a larger MTU keeps sending
             # packets the path drops, which breaks downloads through the link.
             try:
@@ -538,11 +551,18 @@ class ExitLinkService:
         except (TypeError, ValueError):
             mtu = 0
         ipv6 = bool(await asyncio.to_thread(awg._get_subnet_ipv6_ip, protocol))
+        exit_params = {}
+        exit_uid = (rec.get('exit_link') or {}).get('exit_uid')
+        if exit_uid:
+            try:
+                exit_params = self._exit(data, exit_uid)[1].get('awg_params') or {}
+            except ExitLinkError:
+                pass
         return {
             'status': 'success',
             'exit_link': rec.get('exit_link'),
             'exit_link_status': link_status,
             'ipv6': ipv6,
             'mtu': mtu,
-            'exit_mtu': transit_mtu(data),
+            'exit_mtu': link_transit_mtu(data, exit_params),
         }

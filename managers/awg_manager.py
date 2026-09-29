@@ -146,20 +146,42 @@ EGRESS_CHECK_URLS = ('https://api.ipify.org', 'https://ifconfig.me/ip')
 EGRESS_CHECK_TIMEOUT = 8
 IPV4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
 
-# Obfuscation keys carried on a transit link (exit node <-> entry node). S3/S4
-# pad every cookie/transport packet and would eat the MTU budget of a tunnel
-# inside a tunnel, so only the handshake-side keys are used on that hop.
+# Obfuscation keys carried on a transit link (exit node <-> entry node).
+# The transit carries every client's traffic, so it needs AWG 2.0-level
+# masking of the data packets too: with a fixed H4 and no S4 every transport
+# packet starts with the same four bytes and has a predictable size, a known
+# AWG 1.x fingerprint that gets a long-lived flow dropped a few minutes after
+# the handshake. S4 is kept small (TRANSIT_JUNK_SIZE_MAX) because it rides on
+# every packet of a tunnel inside a tunnel; the link MTU is capped by
+# transport_overhead() accordingly. Links to exits installed before S3/S4/I1
+# were carried here keep working: an absent key is simply not written.
 TRANSIT_PARAM_KEYS = (
     ('junk_packet_count', 'Jc'),
     ('junk_packet_min_size', 'Jmin'),
     ('junk_packet_max_size', 'Jmax'),
     ('init_packet_junk_size', 'S1'),
     ('response_packet_junk_size', 'S2'),
+    ('cookie_reply_packet_junk_size', 'S3'),
+    ('transport_packet_junk_size', 'S4'),
     ('init_packet_magic_header', 'H1'),
     ('response_packet_magic_header', 'H2'),
     ('underload_packet_magic_header', 'H3'),
     ('transport_packet_magic_header', 'H4'),
+    ('i1', 'I1'),
 )
+
+# Upper bound of S3/S4 on a transit link: with the default 1420 transit MTU
+# capped by transport_overhead() this still leaves a 1500-byte path intact.
+TRANSIT_JUNK_SIZE_MAX = 30
+
+# Special junk packet sent before each transit handshake: the first datagram
+# of a QUIC v1 connection as Chrome sends it (a 1250-byte Initial). Long
+# header, version 1, an 8-byte random destination connection ID, no source
+# ID or token, and a Length field that matches the rest of the datagram
+# (0x44d0 = 1232 bytes of packet number + payload), so a parser walking the
+# header sees a consistent packet. QUIC on an arbitrary UDP port is common;
+# a DNS answer on a non-53 port is not.
+TRANSIT_DEFAULT_I1 = '<b 0xc30000000108><r 8><b 0x000044d0><r 1232>'
 
 # Runs inside the awg3 container before awg-quick. Creating a throwaway
 # interface both loads the module (a module present on disk but not yet loaded
@@ -318,6 +340,23 @@ def safe_client_mtu(awg_params, link_mtu=DEFAULT_LINK_MTU):
     except (TypeError, ValueError):
         link = DEFAULT_LINK_MTU
     return max(MIN_CLIENT_MTU, link - transport_overhead(awg_params))
+
+
+def generate_transit_params():
+    """Obfuscation of an exit link (entry <-> exit), AWG 2.0 level.
+
+    Ranged H1-H4 so data packets carry no constant header, small S3/S4 so
+    cookie/transport packets get padding without breaking the MTU budget,
+    and a QUIC Initial as I1. Only TRANSIT_PARAM_KEYS are returned.
+    """
+    import random
+
+    params = generate_awg_params(use_ranges=True)
+    params['cookie_reply_packet_junk_size'] = str(random.randint(10, TRANSIT_JUNK_SIZE_MAX))
+    params['transport_packet_junk_size'] = str(random.randint(10, TRANSIT_JUNK_SIZE_MAX))
+    params['i1'] = TRANSIT_DEFAULT_I1
+    wanted = {param_key for param_key, _ in TRANSIT_PARAM_KEYS}
+    return {k: v for k, v in params.items() if k in wanted}
 
 
 def generate_awg_params(use_ranges=False, awg3=False):

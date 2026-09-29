@@ -166,18 +166,25 @@ class ExitInstallTests(unittest.TestCase):
         self.assertIn('docker restart amnezia-exit', ssh.commands)
         self.assertTrue(any('ip link show transit0' in c for c in ssh.commands))
 
-    def test_install_with_obfuscation_writes_handshake_keys_only(self):
+    def test_install_with_obfuscation_writes_awg2_transit_keys(self):
         ssh = FakeSSH()
         result = ExitManager(ssh).install_protocol('exit', port='55520', obfuscation=True)
 
         conf = ssh.files[CONF]
         self.assertTrue(result['obfuscation'])
-        for key in ('Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'):
-            self.assertRegex(conf, rf'(?m)^{key} = \S+$')
-        for key in ('S3', 'S4', 'I1'):
-            self.assertNotRegex(conf, rf'(?m)^{key} = ')
+        for key in ('Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4'):
+            self.assertRegex(conf, rf'(?m)^{key} = \d+$')
+        # ranged headers: no constant first four bytes on data packets
+        for key in ('H1', 'H2', 'H3', 'H4'):
+            self.assertRegex(conf, rf'(?m)^{key} = \d+-\d+$')
+        self.assertRegex(conf, r'(?m)^I1 = <b 0xc3000000010[0-9a-f]*>')
         self.assertIn('# Obfuscation = on', conf)
-        self.assertEqual(set(result['awg_params']), {'junk_packet_count', 'junk_packet_min_size', 'junk_packet_max_size', 'init_packet_junk_size', 'response_packet_junk_size', 'init_packet_magic_header', 'response_packet_magic_header', 'underload_packet_magic_header', 'transport_packet_magic_header'})
+        self.assertEqual(set(result['awg_params']), {
+            'junk_packet_count', 'junk_packet_min_size', 'junk_packet_max_size',
+            'init_packet_junk_size', 'response_packet_junk_size',
+            'cookie_reply_packet_junk_size', 'transport_packet_junk_size',
+            'init_packet_magic_header', 'response_packet_magic_header',
+            'underload_packet_magic_header', 'transport_packet_magic_header', 'i1'})
 
     def test_install_rejects_non_slash_24_subnet(self):
         ssh = FakeSSH()

@@ -135,14 +135,15 @@ class ExitConfBodyTests(unittest.TestCase):
         self.assertNotIn('Jc', conf)
         self.assertLess(conf.index('[Interface]'), conf.index('[Peer]'))
 
-    def test_obfuscated_link_carries_handshake_keys_only(self):
+    def test_obfuscated_link_carries_transit_keys(self):
+        # S3/S4 must reach the entry: they have to match the exit's values,
+        # otherwise the two ends parse each other's packets at different offsets.
         conf = AWGManager._exit_conf_body(OBFUSCATED_LINK)
         self.assertIn('# Obfuscation = on\n', conf)
         interface = conf.split('[Peer]')[0]
-        for line in ('Jc = 4', 'Jmin = 8', 'Jmax = 40', 'S1 = 27', 'S2 = 19', 'H1 = 1', 'H2 = 2', 'H3 = 3', 'H4 = 4'):
+        for line in ('Jc = 4', 'Jmin = 8', 'Jmax = 40', 'S1 = 27', 'S2 = 19', 'S3 = 20', 'S4 = 23',
+                     'H1 = 1', 'H2 = 2', 'H3 = 3', 'H4 = 4'):
             self.assertIn(line + '\n', interface)
-        self.assertNotIn('S3 = ', conf)
-        self.assertNotIn('S4 = ', conf)
         self.assertLess(interface.index('Table = off'), interface.index('Jc = 4'))
 
     def test_dns_via_exit_marker(self):

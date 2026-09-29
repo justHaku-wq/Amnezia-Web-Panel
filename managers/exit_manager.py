@@ -15,8 +15,8 @@ from managers.awg_manager import (
     AWG_QUICK_FORCE_USERSPACE_PATCH,
     TRANSIT_PARAM_KEYS,
     AWGManager,
-    generate_awg_params,
     generate_psk,
+    generate_transit_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ cat > {self.CONFIG_PATH} <<EOF
 
         `subnet` is the transit subnet shared with the entry nodes (must be an
         IPv4 /24: the peer allocator hands out the last octet); `obfuscation`
-        turns the transit link into AmneziaWG with junk/handshake obfuscation,
+        turns the transit link into AmneziaWG 2.0 (generate_transit_params),
         otherwise it speaks plain WireGuard; `mtu` is the transit MTU from
         Settings -> Exit nodes.
         """
@@ -243,10 +243,7 @@ cat > {self.CONFIG_PATH} <<EOF
         self._wait_container_running(self.CONTAINER_NAME)
         results.append("Container started")
 
-        awg_params = None
-        if obfuscation:
-            wanted = {param_key for param_key, _ in TRANSIT_PARAM_KEYS}
-            awg_params = {k: v for k, v in generate_awg_params(use_ranges=False).items() if k in wanted}
+        awg_params = generate_transit_params() if obfuscation else None
 
         try:
             results.append("Configuring transit endpoint...")
