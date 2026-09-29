@@ -536,6 +536,11 @@
                 <select class="form-input" id="exitDefaultNode"><option value="">{{ _('exit_default_none') }}</option></select>
                 <p class="form-hint">{{ _('exit_default_hint') }}</p>
             </div>
+            <div class="form-group">
+                <label class="form-label" for="exitTransitMtu">{{ _('exit_transit_mtu') }}</label>
+                <input type="number" class="form-input" id="exitTransitMtu" value="{{ (settings.get('exit_nodes') or {}).get('transit_mtu', 1420) }}" min="1280" max="1420" step="1">
+                <p class="form-hint">{{ _('exit_transit_mtu_hint') }}</p>
+            </div>
         </div>
 
         <!-- BLOCK: Self-Service -->
@@ -1031,7 +1036,11 @@
             allowed_protocols: Array.from(document.querySelectorAll('input[name="ss_proto"]:checked')).map(el => el.value),
         };
 
-        const exit_nodes = { default_exit_uid: document.getElementById('exitDefaultNode').value || '' };
+        const transitMtu = parseInt(document.getElementById('exitTransitMtu').value, 10);
+        const exit_nodes = {
+            default_exit_uid: document.getElementById('exitDefaultNode').value || '',
+            transit_mtu: Number.isFinite(transitMtu) ? Math.min(1420, Math.max(1280, transitMtu)) : 1420,
+        };
 
         // The password field is intentionally never pre-filled; an empty value
         // tells the server to keep the stored one.

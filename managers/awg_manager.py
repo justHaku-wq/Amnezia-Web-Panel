@@ -1776,7 +1776,9 @@ x_exit_sync() {
             f"# DnsViaExit = {'on' if link.get('dns_via_exit') else 'off'}",
             f"PrivateKey = {ENTRY_PRIVATE_KEY_PLACEHOLDER}",
             f"Address = {link['transit_ip']}/{link.get('subnet_cidr', 24)}",
-            f"MTU = {EXIT_MTU}",
+            # Transit MTU from Settings -> Exit nodes; links written before
+            # the setting existed carry none and keep the old default.
+            f"MTU = {link.get('mtu') or EXIT_MTU}",
             'Table = off',
         ]
         if link.get('obfuscation'):
@@ -1837,7 +1839,7 @@ x_exit_sync() {
         """Write exit0.conf into the container, refresh start.sh (no restart)
         and bring the link up live. `link` carries transit_ip, subnet_cidr,
         exit_public_key, psk, endpoint_host, endpoint_port, obfuscation,
-        awg_params, exit_uid, exit_name, dns_via_exit."""
+        awg_params, exit_uid, exit_name, dns_via_exit and mtu."""
         container_name = self._container_name(protocol_type)
         self.ssh.upload_file(self._exit_conf_body(link), "/tmp/_amnz_exit0.conf")
         # One docker step per sudo call (the sudo prefix covers only the first

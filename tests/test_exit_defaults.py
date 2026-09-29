@@ -105,8 +105,28 @@ class DefaultExitNodeSettingsTests(unittest.TestCase):
             # empty means "no default" and is not a warning
             self.assertEqual(self.save(client, '')['warnings'], [])
 
+    def test_transit_mtu_is_saved_and_validated(self):
+        with TestClient(panel.app) as client:
+            login = client.post('/api/auth/login', json={'username': 'admin', 'password': 'admin'})
+            self.assertEqual(login.status_code, 200, login.text)
+
+            ok = client.post('/api/settings/save', json=dict(
+                SETTINGS_PAYLOAD, exit_nodes={'default_exit_uid': '', 'transit_mtu': 1400}))
+            self.assertEqual(ok.status_code, 200, ok.text)
+            self.assertEqual(panel.load_data()['settings']['exit_nodes']['transit_mtu'], 1400)
+
+            # saving without the field (older UI) falls back to the default
+            self.save(client, '')
+            self.assertEqual(panel.load_data()['settings']['exit_nodes']['transit_mtu'], 1420)
+
+            for bad in (1500, 1000):
+                rejected = client.post('/api/settings/save', json=dict(
+                    SETTINGS_PAYLOAD, exit_nodes={'default_exit_uid': '', 'transit_mtu': bad}))
+                self.assertEqual(rejected.status_code, 422, f'{bad} was accepted')
+
     def test_settings_default_is_present_for_old_data_files(self):
-        self.assertEqual(panel.load_data()['settings']['exit_nodes'], {'default_exit_uid': ''})
+        self.assertEqual(panel.load_data()['settings']['exit_nodes'],
+                         {'default_exit_uid': '', 'transit_mtu': 1420})
 
     def test_settings_page_renders_the_exit_card(self):
         with TestClient(panel.app) as client:
@@ -124,8 +144,11 @@ class DefaultExitNodeSettingsTests(unittest.TestCase):
             page = f.read()
         self.assertIn('id="exitDefaultNode"', page)
         self.assertRegex(page, r"async function loadExitNodes\(")
-        self.assertIn("const exit_nodes = { default_exit_uid:", page)
+        self.assertRegex(page, r"const exit_nodes = \{\s*default_exit_uid:")
         self.assertIn('self_service, exit_nodes })', page)
+        # transit MTU: field on the card, sent with the rest of exit_nodes
+        self.assertIn('id="exitTransitMtu"', page)
+        self.assertRegex(page, r"transit_mtu: Number\.isFinite\(transitMtu\)")
         # the saved uid comes from the server, so it is not interpolated raw
         self.assertIn("| tojson }};", page[page.index('async function loadExitNodes'):][:600])
 

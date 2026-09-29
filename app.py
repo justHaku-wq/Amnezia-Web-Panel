@@ -48,7 +48,9 @@ from managers.wireguard_manager import WireGuardManager
 from managers.backup_manager import BackupManager
 import telegram_bot as tg_bot
 
-from exit_link_service import ExitLinkError, ExitLinkService
+from exit_link_service import (
+    EXIT_MTU_LIMIT, TRANSIT_MTU_MIN, ExitLinkError, ExitLinkService, transit_mtu,
+)
 from mail_service import (
     DEFAULT_MAIL_SETTINGS,
     MailError,
@@ -244,6 +246,7 @@ def load_data():
     })
     settings.setdefault('captcha', {'enabled': False})
     settings.setdefault('exit_nodes', {'default_exit_uid': ''})
+    settings['exit_nodes'].setdefault('transit_mtu', EXIT_MTU_LIMIT)
     settings.setdefault('telegram', {'token': '', 'enabled': False})
     mail = settings.setdefault('mail', dict(DEFAULT_MAIL_SETTINGS))
     for key, value in DEFAULT_MAIL_SETTINGS.items():
@@ -2438,6 +2441,7 @@ class UpdateUserRequest(BaseModel):
 
 class ExitNodesSettings(BaseModel):
     default_exit_uid: str = ''
+    transit_mtu: int = Field(EXIT_MTU_LIMIT, ge=TRANSIT_MTU_MIN, le=EXIT_MTU_LIMIT)
 
 
 class SaveSettingsRequest(BaseModel):
@@ -3750,6 +3754,7 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 port=req.port,
                 subnet=req.exit_subnet,
                 obfuscation=bool(req.exit_obfuscation),
+                mtu=transit_mtu(data),
             )
         elif install_base in AWG_PROTOCOLS:
             install_args = (install_protocol,)
@@ -4111,6 +4116,8 @@ def api_awg_settings_get(request: Request, server_id: int, req: ProtocolRequest)
         finally:
             ssh.disconnect()
         settings['dns1'], settings['dns2'] = split_dns(settings.get('dns'))
+        if 'exit_mtu' in settings:
+            settings['exit_mtu'] = transit_mtu(data)
         return settings
     except Exception as e:
         logger.exception("Error getting AWG settings")
@@ -6086,7 +6093,12 @@ def save_settings(request: Request, payload: SaveSettingsRequest):
         # the node was uninstalled or deleted between opening and saving
         default_exit_uid = ''
         warnings.append('exit_default_cleared')
-    settings['exit_nodes'] = {'default_exit_uid': default_exit_uid}
+    # Takes effect on the next link / Repair of each instance (both ends are
+    # rewritten then); existing links keep running at their current MTU.
+    settings['exit_nodes'] = {
+        'default_exit_uid': default_exit_uid,
+        'transit_mtu': payload.exit_nodes.transit_mtu,
+    }
     save_data(data)
     logger.info("Settings saved (including captcha, telegram and auto backup)")
 

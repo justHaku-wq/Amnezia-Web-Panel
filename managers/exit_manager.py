@@ -136,7 +136,7 @@ class ExitManager(AWGManager):
             extra_blocks=(self._mss_clamp_body(self.INTERFACE),),
         )
 
-    def _transit_config(self, port, net, awg_params):
+    def _transit_config(self, port, net, awg_params, mtu=None):
         """transit0.conf. Panel metadata lives inside [Interface] as comments
         (remove_client() splits the file on `[` and would drop anything before
         the first section)."""
@@ -153,18 +153,18 @@ class ExitManager(AWGManager):
             "PrivateKey = $(cat wireguard_server_private_key.key)\n"
             f"Address = {self._subnet_gateway(net)}\n"
             f"ListenPort = {port}\n"
-            f"MTU = {EXIT_DEFAULTS['mtu']}\n"
+            f"MTU = {mtu or EXIT_DEFAULTS['mtu']}\n"
             f"{obfuscation_lines}"
         )
 
-    def _configure_exit_container(self, port, net, awg_params):
+    def _configure_exit_container(self, port, net, awg_params, mtu=None):
         """Generate the key pair (kept if present) and write transit0.conf."""
         script = f"""
 mkdir -p {self.CONFIG_DIR} && cd {self.CONFIG_DIR} && umask 077
 [ -s wireguard_server_private_key.key ] || awg genkey > wireguard_server_private_key.key
 awg pubkey < wireguard_server_private_key.key > wireguard_server_public_key.key
 cat > {self.CONFIG_PATH} <<EOF
-{self._transit_config(port, net, awg_params)}EOF
+{self._transit_config(port, net, awg_params, mtu)}EOF
 """
         out, err, code = self.ssh.run_sudo_command(
             f"docker exec -i {self.CONTAINER_NAME} bash -c '{script}'"
@@ -173,13 +173,14 @@ cat > {self.CONFIG_PATH} <<EOF
             raise RuntimeError(f"Failed to configure the transit endpoint: {err}")
 
     def install_protocol(self, protocol_type='exit', port=None, subnet=None,
-                         obfuscation=False, **_ignored):
+                         obfuscation=False, mtu=None, **_ignored):
         """Install the exit-node container.
 
         `subnet` is the transit subnet shared with the entry nodes (must be an
         IPv4 /24: the peer allocator hands out the last octet); `obfuscation`
         turns the transit link into AmneziaWG with junk/handshake obfuscation,
-        otherwise it speaks plain WireGuard.
+        otherwise it speaks plain WireGuard; `mtu` is the transit MTU from
+        Settings -> Exit nodes.
         """
         port = str(port or EXIT_DEFAULTS['port']).strip()
         try:
@@ -249,7 +250,7 @@ cat > {self.CONFIG_PATH} <<EOF
 
         try:
             results.append("Configuring transit endpoint...")
-            self._configure_exit_container(port, net, awg_params)
+            self._configure_exit_container(port, net, awg_params, mtu)
             results.append("Transit endpoint configured ("
                            + ("AmneziaWG obfuscation on" if awg_params else "plain WireGuard") + ")")
             results.append("Starting transit service...")
@@ -365,6 +366,24 @@ cat > {self.CONFIG_PATH} <<EOF
             if (entry.get('userData') or {}).get('peerId') == peer_id:
                 return entry
         return None
+
+    def set_transit_mtu(self, mtu):
+        """Apply the transit MTU live and persist it in transit0.conf.
+
+        The live change keeps established peers up (no awg-quick restart); the
+        file is what the interface comes back with after a container restart.
+        """
+        mtu = int(mtu)
+        container = self.CONTAINER_NAME
+        steps = (
+            f"docker exec -i {container} sed -i 's/^MTU = .*/MTU = {mtu}/' {self.CONFIG_PATH}",
+            f"docker exec -i {container} ip link set dev {self.INTERFACE} mtu {mtu}",
+        )
+        for step in steps:
+            out, err, code = self.ssh.run_sudo_command(step)
+            if code != 0:
+                raise RuntimeError(f"Failed to set transit MTU: {err or out or f'SSH exit code {code}'}")
+        return mtu
 
     def add_peer(self, peer_id, name, public_key):
         """Register (or re-register) an entry node as a peer.

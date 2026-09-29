@@ -18,7 +18,8 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-EXIT_MTU_LIMIT = 1420          # exit0 MTU; client MTU must not exceed it
+EXIT_MTU_LIMIT = 1420          # default and ceiling of the transit MTU (exit0/transit0)
+TRANSIT_MTU_MIN = 1280         # the smallest MTU legal with IPv6
 HANDSHAKE_WAIT_SECONDS = 15
 HANDSHAKE_POLL_SECONDS = 2
 
@@ -33,6 +34,23 @@ class ExitLinkError(Exception):
 
 
 IPV4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
+
+
+def transit_mtu(data):
+    """MTU of the transit link from Settings -> Exit nodes.
+
+    1420 fits a 1500-byte path (+60 bytes of IPv4/UDP/WireGuard overhead).
+    Paths with a smaller MTU (tunnelled uplinks at 1476 are common) need a
+    lower value, otherwise full-size transit packets are fragmented or dropped
+    and throughput collapses. Anything missing or out of range falls back to
+    the safe bounds instead of breaking a link.
+    """
+    raw = ((data or {}).get('settings', {}).get('exit_nodes') or {}).get('transit_mtu')
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return EXIT_MTU_LIMIT
+    return max(TRANSIT_MTU_MIN, min(EXIT_MTU_LIMIT, value))
 
 
 def peer_id_for(entry_uid, protocol):
@@ -245,9 +263,10 @@ class ExitLinkService:
             except (TypeError, ValueError):
                 mtu = 0
             ipv6 = bool(await asyncio.to_thread(awg._get_subnet_ipv6_ip, protocol))
-            if mtu > EXIT_MTU_LIMIT and not force:
+            link_mtu = transit_mtu(data)
+            if mtu > link_mtu and not force:
                 raise ExitLinkError('exit_mtu_too_big',
-                                    f'Client MTU {mtu} exceeds the link MTU {EXIT_MTU_LIMIT}; '
+                                    f'Client MTU {mtu} exceeds the link MTU {link_mtu}; '
                                     f'lower it in the AWG settings or link anyway')
 
             # The peer on a previous exit is dropped only after the new link is
@@ -267,6 +286,13 @@ class ExitLinkService:
             exit_manager = await self._exit_manager(exit_srv)
             name = f"{entry.get('name') or entry.get('host', '')} / {self.protocol_display_name(protocol)}"
             peer = await asyncio.to_thread(exit_manager.add_peer, peer_id, name, entry_pub)
+            # Both ends must agree: an exit still at a larger MTU keeps sending
+            # packets the path drops, which breaks downloads through the link.
+            try:
+                await asyncio.to_thread(exit_manager.set_transit_mtu, link_mtu)
+            except Exception as err:
+                logger.warning("could not set transit MTU %s on exit %s: %s", link_mtu, exit_uid, err)
+                warnings.append('exit_mtu_not_applied')
             link = {
                 'exit_uid': exit_uid,
                 'exit_name': exit_srv.get('name') or exit_srv.get('host', ''),
@@ -279,6 +305,7 @@ class ExitLinkService:
                 'obfuscation': bool(peer.get('obfuscation')),
                 'awg_params': peer.get('awg_params') or {},
                 'dns_via_exit': dns_via_exit,
+                'mtu': link_mtu,
             }
             try:
                 log.append(await asyncio.to_thread(awg.exit_link, protocol, link))
@@ -517,5 +544,5 @@ class ExitLinkService:
             'exit_link_status': link_status,
             'ipv6': ipv6,
             'mtu': mtu,
-            'exit_mtu': EXIT_MTU_LIMIT,
+            'exit_mtu': transit_mtu(data),
         }

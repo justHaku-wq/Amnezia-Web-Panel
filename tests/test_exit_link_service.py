@@ -101,7 +101,14 @@ class FakeExit:
         self.events = events if events is not None else []
         self.add_error = None
         self.remove_error = None
+        self.mtu_error = None
         self.next_ip = '10.9.0.7'
+
+    def set_transit_mtu(self, mtu):
+        self.calls.append(('set_transit_mtu', mtu))
+        if self.mtu_error:
+            raise RuntimeError(self.mtu_error)
+        return mtu
 
     def add_peer(self, peer_id, name, public_key):
         self.calls.append(('add_peer', peer_id, name, public_key))
@@ -176,7 +183,8 @@ class LinkTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'success')
         self.assertEqual([c[0] for c in h.awg().calls], ['exit_prepare_keys', 'exit_link', 'exit_link_status'])
-        self.assertEqual(h.exit().calls, [('add_peer', 'entry-uid:awg2', 'Paris / AmneziaWG 2.0', 'PUB-198.51.100.1-awg2')])
+        self.assertEqual(h.exit().calls, [('add_peer', 'entry-uid:awg2', 'Paris / AmneziaWG 2.0', 'PUB-198.51.100.1-awg2'),
+                                          ('set_transit_mtu', 1420)])
         link = h.awg().calls[1][2]
         self.assertEqual(link['transit_ip'], '10.9.0.7')
         self.assertEqual(link['subnet_cidr'], '24')
