@@ -177,7 +177,7 @@ class ExitInstallTests(unittest.TestCase):
         # ranged headers: no constant first four bytes on data packets
         for key in ('H1', 'H2', 'H3', 'H4'):
             self.assertRegex(conf, rf'(?m)^{key} = \d+-\d+$')
-        self.assertRegex(conf, r'(?m)^I1 = <b 0xc3000000010[0-9a-f]*>')
+        self.assertRegex(conf, r'(?m)^I1 = <b 0xc200000001[0-9a-f]{2}><r \d+>')
         self.assertIn('# Obfuscation = on', conf)
         self.assertEqual(set(result['awg_params']), {
             'junk_packet_count', 'junk_packet_min_size', 'junk_packet_max_size',

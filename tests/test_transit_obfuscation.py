@@ -4,22 +4,28 @@ The transit used to be generated like AWG 1.x: fixed H1-H4 and no S3/S4, so
 every data packet between entry and exit started with the same four bytes and
 had a predictable size. Links came up (the handshake is junk-padded) and died
 a few minutes into real traffic. The transit now gets ranged headers, small
-S3/S4 padding and a QUIC Initial as I1, and the link MTU is capped so the
-padded packets still fit a 1500-byte path.
+S3/S4 padding and a Firefox-like QUIC Initial as I1, and the link MTU is
+capped so the padded packets still fit a 1500-byte path.
 """
 
+import re
 import unittest
 
 from exit_link_service import link_transit_mtu
 from managers.awg_manager import (
+    QUIC_DCID_LEN,
+    QUIC_INITIAL_SIZE,
+    QUIC_SCID_LEN,
     SPECIAL_JUNK_MAX_SIZE,
-    TRANSIT_DEFAULT_I1,
     TRANSIT_JUNK_SIZE_MAX,
     TRANSIT_PARAM_KEYS,
     AWGManager,
+    generate_quic_initial,
     generate_transit_params,
     validate_special_junk,
 )
+
+TAG_RE = re.compile(r'<(b|r) ([^>]*)>')
 from test_awg_exit_link import LINK
 from test_exit_link_service import Harness, run
 
@@ -58,28 +64,46 @@ class GenerateTransitParamsTests(unittest.TestCase):
             self.assertNotEqual(int(params['init_packet_junk_size']) + 56,
                                 int(params['response_packet_junk_size']))
 
-    def test_i1_is_the_quic_initial(self):
-        self.assertEqual(generate_transit_params()['i1'], TRANSIT_DEFAULT_I1)
+    def test_i1_is_a_quic_initial(self):
+        self.assertTrue(generate_transit_params()['i1'].startswith('<b 0xc200000001'))
 
 
 class QuicInitialTests(unittest.TestCase):
-    def test_size_matches_chrome_and_fits_a_datagram(self):
-        size = validate_special_junk(TRANSIT_DEFAULT_I1)
-        self.assertEqual(size, 1250)
-        self.assertLessEqual(size, SPECIAL_JUNK_MAX_SIZE)
+    """Each draw must parse as one consistent QUIC v1 Initial."""
 
-    def test_header_is_consistent(self):
-        head = bytes.fromhex(TRANSIT_DEFAULT_I1.split('<b 0x')[1].split('>')[0])
-        self.assertEqual(head[0] & 0xf0, 0xc0)            # long header, Initial
-        self.assertEqual(head[1:5], b'\x00\x00\x00\x01')  # QUIC v1
-        dcid_len = head[5]
-        self.assertEqual(dcid_len, 8)
-        tail = bytes.fromhex(TRANSIT_DEFAULT_I1.split('<b 0x')[2].split('>')[0])
-        self.assertEqual(tail[0], 0)                      # no source connection ID
-        self.assertEqual(tail[1], 0)                      # no token
-        length = int.from_bytes(tail[2:4], 'big') & 0x3fff
-        header_size = len(head) + dcid_len + len(tail)
-        self.assertEqual(header_size + length, 1250)
+    def parse(self, value):
+        tags = TAG_RE.findall(value)
+        self.assertEqual(''.join(f'<{t} {a}>' for t, a in tags), value, 'only <b>/<r> tags')
+        self.assertEqual([t for t, _ in tags], ['b', 'r', 'b', 'r', 'b', 'r'])
+        head = bytes.fromhex(tags[0][1][2:])
+        scid = bytes.fromhex(tags[2][1][2:])
+        tail = bytes.fromhex(tags[4][1][2:])
+        return head, int(tags[1][1]), scid, int(tags[3][1]), tail, int(tags[5][1])
+
+    def test_every_draw_is_a_consistent_firefox_initial(self):
+        shapes = set()
+        for _ in range(300):
+            value = generate_quic_initial()
+            head, dcid_random, scid, scid_random, tail, rest_random = self.parse(value)
+
+            self.assertEqual(head[0], 0xc2)                    # long header, Initial, 3-byte PN
+            self.assertEqual(head[1:5], b'\x00\x00\x00\x01')   # QUIC v1
+            self.assertEqual(len(head), 6)
+            self.assertEqual(head[5], dcid_random)             # DCID length byte matches the random ID
+            self.assertTrue(QUIC_DCID_LEN[0] <= dcid_random <= QUIC_DCID_LEN[1])
+            self.assertEqual(scid, bytes([scid_random]))       # SCID length byte matches the random ID
+            self.assertTrue(QUIC_SCID_LEN[0] <= scid_random <= QUIC_SCID_LEN[1])
+            self.assertEqual(tail[0], 0)                       # no token
+            self.assertEqual(tail[1] >> 6, 1)                  # 2-byte varint Length
+            length = int.from_bytes(tail[1:3], 'big') & 0x3fff
+            self.assertEqual(length, rest_random)              # Length covers PN + payload exactly
+
+            size = validate_special_junk(value)
+            self.assertTrue(QUIC_INITIAL_SIZE[0] <= size <= QUIC_INITIAL_SIZE[1])
+            self.assertLessEqual(size, SPECIAL_JUNK_MAX_SIZE)
+            shapes.add((dcid_random, scid_random, size))
+        # installs do not all share one packet shape
+        self.assertGreater(len(shapes), 50)
 
 
 class EntryConfTests(unittest.TestCase):

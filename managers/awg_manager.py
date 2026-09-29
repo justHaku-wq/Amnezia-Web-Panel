@@ -175,13 +175,15 @@ TRANSIT_PARAM_KEYS = (
 TRANSIT_JUNK_SIZE_MAX = 30
 
 # Special junk packet sent before each transit handshake: the first datagram
-# of a QUIC v1 connection as Chrome sends it (a 1250-byte Initial). Long
-# header, version 1, an 8-byte random destination connection ID, no source
-# ID or token, and a Length field that matches the rest of the datagram
-# (0x44d0 = 1232 bytes of packet number + payload), so a parser walking the
-# header sees a consistent packet. QUIC on an arbitrary UDP port is common;
-# a DNS answer on a non-53 port is not.
-TRANSIT_DEFAULT_I1 = '<b 0xc30000000108><r 8><b 0x000044d0><r 1232>'
+# of a QUIC v1 connection the way Firefox sends it - long header, Initial
+# with a 3-byte packet number (0xc2), version 1, a destination ID of 8-20
+# bytes and a non-empty source ID, no token, 1200-1252 bytes on the wire.
+# QUIC on an arbitrary UDP port is common; a DNS answer on a non-53 port is
+# not. See generate_quic_initial().
+QUIC_INITIAL_FIRST_BYTE = 0xc2
+QUIC_DCID_LEN = (8, 20)
+QUIC_SCID_LEN = (3, 16)
+QUIC_INITIAL_SIZE = (1200, 1252)
 
 # Runs inside the awg3 container before awg-quick. Creating a throwaway
 # interface both loads the module (a module present on disk but not yet loaded
@@ -342,19 +344,43 @@ def safe_client_mtu(awg_params, link_mtu=DEFAULT_LINK_MTU):
     return max(MIN_CLIENT_MTU, link - transport_overhead(awg_params))
 
 
+def generate_quic_initial():
+    """I1 imitating a Firefox QUIC v1 Initial.
+
+    The ID lengths and the datagram size are drawn once per install, so
+    panel installs do not all share one packet shape; the IDs, the packet
+    number and the payload are random bytes on every handshake (<r N>), as
+    real connection IDs and header-protected, encrypted data would be. The
+    Length field always matches the rest of the datagram, so a parser
+    walking the header sees a consistent packet.
+    """
+    import random
+
+    dcid_len = random.randint(*QUIC_DCID_LEN)
+    scid_len = random.randint(*QUIC_SCID_LEN)
+    total = random.randint(*QUIC_INITIAL_SIZE)
+    # first byte + version + DCID len + DCID + SCID len + SCID + token len + 2-byte Length
+    header = 1 + 4 + 1 + dcid_len + 1 + scid_len + 1 + 2
+    length = total - header  # packet number + payload, both random
+    return (f'<b 0x{QUIC_INITIAL_FIRST_BYTE:02x}00000001{dcid_len:02x}><r {dcid_len}>'
+            f'<b 0x{scid_len:02x}><r {scid_len}>'
+            f'<b 0x00{0x4000 | length:04x}><r {length}>')
+
+
 def generate_transit_params():
     """Obfuscation of an exit link (entry <-> exit), AWG 2.0 level.
 
     Ranged H1-H4 so data packets carry no constant header, small S3/S4 so
     cookie/transport packets get padding without breaking the MTU budget,
-    and a QUIC Initial as I1. Only TRANSIT_PARAM_KEYS are returned.
+    and a Firefox-like QUIC Initial as I1. Only TRANSIT_PARAM_KEYS are
+    returned.
     """
     import random
 
     params = generate_awg_params(use_ranges=True)
     params['cookie_reply_packet_junk_size'] = str(random.randint(10, TRANSIT_JUNK_SIZE_MAX))
     params['transport_packet_junk_size'] = str(random.randint(10, TRANSIT_JUNK_SIZE_MAX))
-    params['i1'] = TRANSIT_DEFAULT_I1
+    params['i1'] = generate_quic_initial()
     wanted = {param_key for param_key, _ in TRANSIT_PARAM_KEYS}
     return {k: v for k, v in params.items() if k in wanted}
 
