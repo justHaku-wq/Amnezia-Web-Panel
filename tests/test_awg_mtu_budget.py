@@ -80,9 +80,13 @@ class GeneratedDefaultsTests(unittest.TestCase):
     """What a fresh install would pick, per protocol generation."""
 
     def test_awg3_default_would_not_fit_a_standard_link(self):
-        params = generate_awg_params(awg3=True)
-        oversized = int(AWG_DEFAULTS['mtu']) + transport_overhead(params)
-        self.assertGreater(oversized, DEFAULT_LINK_MTU,
+        # S4 and ContentPaddingAddition are random, so a single draw can land
+        # below the link (1376 + 60 + 12 + 32 = 1480) and made this test
+        # flaky. The claim is that the generator produces installs the old
+        # default does not fit, so look for one across many draws.
+        worst = max(int(AWG_DEFAULTS['mtu']) + transport_overhead(generate_awg_params(awg3=True))
+                    for _ in range(200))
+        self.assertGreater(worst, DEFAULT_LINK_MTU,
                            'AWG 3.x padding is what makes the old default unsafe')
 
     def test_derived_default_fits_for_every_generation(self):
