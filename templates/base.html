@@ -312,20 +312,29 @@
 
             const res = await fetch(url, opts);
 
-            if (res.status === 401 || res.status === 403) {
-                window.location.href = '/login';
-                throw new Error('Session expired');
-            }
-
             // Not res.json(): a proxy error page, a restart mid-request or a
             // handler that died before it could answer all arrive as HTML or
             // plain text, and the parse error alone ("unexpected character at
             // line 1 column 1") tells the user nothing about what happened.
             const text = await res.text();
-            let data;
+            let data = null;
             try {
                 data = text ? JSON.parse(text) : {};
             } catch (parseError) {
+                data = null;
+            }
+
+            // 401, and the bare 'Forbidden' every endpoint answers without a
+            // session, mean the login is gone. Any other 403 carries a reason
+            // for the caller (self-service is off, connection limit reached):
+            // redirecting those bounced a logged-in user through /login
+            // straight back to the page they came from.
+            if (res.status === 401 || (res.status === 403 && (!data || !data.error || data.error === 'Forbidden'))) {
+                window.location.href = '/login';
+                throw new Error('Session expired');
+            }
+
+            if (data === null) {
                 const detail = (text || res.statusText || '').replace(/<[^>]*>/g, ' ').trim().slice(0, 120);
                 throw new Error(`HTTP ${res.status}${detail ? ': ' + detail : ''}`);
             }

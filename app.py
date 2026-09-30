@@ -5689,6 +5689,12 @@ async def api_my_connection_options(request: Request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
         return await self_service_connections.get_self_service_options(user['id'], 'web')
+    except SelfServiceError as exc:
+        if exc.forbidden:
+            # My Connections renders its "self-service is off" note from this;
+            # the admin-assigned connections on the page stay usable.
+            return {'enabled': False, 'reason': str(exc)}
+        return _self_service_error_response(exc)
     except Exception as exc:
         return _self_service_error_response(exc)
 
