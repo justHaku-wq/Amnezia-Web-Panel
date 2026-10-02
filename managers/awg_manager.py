@@ -2157,6 +2157,25 @@ x_exit_sync() {
                 return []  # fresh instance: no clientsTable yet
 
         if not out.strip():
+            if batch is not None:
+                # The batched prefetch runs one composite SSH command whose
+                # exit code is not checked per part: a transient `cat
+                # clientsTable` failure inside it yields an EMPTY clients
+                # section while the config section above it read fine. An
+                # empty table next to a config full of peers is exactly the
+                # 'everything became External for one poll' paint — distrust
+                # it and re-read directly instead.
+                conf_part = batch.get('config') or ''
+                if 'PublicKey' in conf_part:
+                    logger.warning(
+                        f"prefetch gave an empty clientsTable for "
+                        f"{container_name} but its config has peers; dropping "
+                        f"batch entry and re-reading directly")
+                    try:
+                        del self.ssh._awg_batch['containers'][container_name]
+                    except Exception:
+                        pass
+                    return self._get_clients_table(protocol_type)
             return []
 
         try:

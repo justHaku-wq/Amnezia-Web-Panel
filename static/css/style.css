@@ -419,7 +419,7 @@ a:hover {
 }
 
 .btn-sm {
-    padding: 6px 14px;
+    padding: 6px 12px;
     font-size: 0.8rem;
     border-radius: var(--radius-sm);
 }
@@ -2122,6 +2122,15 @@ a:hover {
     flex-wrap: wrap;
     row-gap: var(--space-xs);
     margin-bottom: var(--space-md);
+}
+
+.protocol-ctrl button.btn.btn-secondary.btn-sm {
+    padding: 6px 5px;
+}
+
+/* ===== User connections modal: room for a wide connections table ===== */
+#userConnsModal .modal {
+    max-width: 1160px;
 }
 
 /* ===== QR Code ===== */

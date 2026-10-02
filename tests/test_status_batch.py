@@ -161,6 +161,45 @@ class PrefetchAwgStateTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             mgr._get_clients_table('awg2')
 
+    def test_empty_prefetched_clients_with_peers_in_config_rereads_directly(self):
+        """Empty clients section in batch + config WITH peers = transient
+        cat failure inside the composite prefetch command: re-read directly
+        instead of painting every peer 'External' for one poll."""
+        ssh = FakeSSH()
+        ssh.batch_output = (
+            "@@CONTAINER@@ amnezia-awg2\n"
+            "[Interface]\nListenPort = 55424\n"
+            "[Peer]\nPublicKey = PEER_A\nAllowedIPs = 10.8.1.2/32\n"
+            "@@CLIENTS@@\n"   # <- cat failed transiently, nothing followed
+        )
+        mgr = AWGManager(ssh)
+        mgr.prefetch_awg_state(['awg2'])
+
+        clients = mgr._get_clients_table('awg2')
+        self.assertEqual(clients, [])  # FakeSSH direct read returns '[]'
+        self.assertNotIn('amnezia-awg2', ssh._awg_batch['containers'])
+        direct = [c for c in ssh.commands
+                  if 'clientsTable' in c and not c.startswith('for c in ')]
+        self.assertEqual(len(direct), 1)
+
+    def test_empty_prefetched_clients_with_empty_config_stays_empty(self):
+        """Empty clients + config without peers = genuinely fresh instance:
+        no direct re-read, no log noise."""
+        ssh = FakeSSH()
+        ssh.batch_output = (
+            "@@CONTAINER@@ amnezia-awg2\n"
+            "[Interface]\nListenPort = 55424\n"
+            "@@CLIENTS@@\n"
+        )
+        mgr = AWGManager(ssh)
+        mgr.prefetch_awg_state(['awg2'])
+
+        self.assertEqual(mgr._get_clients_table('awg2'), [])
+        self.assertIn('amnezia-awg2', ssh._awg_batch['containers'])
+        direct = [c for c in ssh.commands
+                  if 'clientsTable' in c and not c.startswith('for c in ')]
+        self.assertEqual(direct, [])
+
     def test_stopped_container_reads_nothing(self):
         """A stopped instance must not be exec-polled on every refresh."""
         ssh = FakeSSH()

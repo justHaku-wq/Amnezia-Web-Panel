@@ -68,6 +68,11 @@
     .protocol-card.installed-app-visible {
         display: block !important;
     }
+    /* The instance whose peers are listed below: purple frame, so it is
+       visually obvious which card the connections list belongs to */
+    .protocol-card.active {
+        border: 2px solid #7c3aed;
+    }
     /* While the status check runs, hide every protocol tile so the grid
        does not flash the full marketplace list before real data arrives */
     .protocol-cards.apps-pending .protocol-card,
@@ -3317,8 +3322,21 @@
         document.getElementById('connectionsSection').scrollIntoView({ behavior: 'smooth' });
     }
 
+    // Mark the protocol card that owns the connections list below: the
+    // selected instance gets .active (purple frame), so it is visually clear
+    // whose peers are enumerated. Called from loadConnections so polls,
+    // select changes and programmatic switches all stay in sync.
+    function markActiveProtocolCard() {
+        const proto = document.getElementById('connProtoSelect').value;
+        document.querySelectorAll('.protocol-card.active').forEach(c => c.classList.remove('active'));
+        if (!proto) return;
+        const card = document.getElementById(`proto-${protoDomKey(proto)}`);
+        if (card) card.classList.add('active');
+    }
+
     async function loadConnections(isPoll, force) {
         const proto = document.getElementById('connProtoSelect').value;
+        markActiveProtocolCard();
         const loading = document.getElementById('connectionsLoading');
         const emptyEl = document.getElementById('connectionsEmpty');
         const listEl = document.getElementById('connectionsListInner');
@@ -3339,12 +3357,23 @@
             return;
         }
 
-        if (window.connLoading) return; // don't stack overlapping polls
+        // A click while a load is in flight must not be dropped: remember it
+        // and re-run for the CURRENT selector value when the flight ends.
+        // Otherwise the in-flight (older) protocol renders its peers into a
+        // grid already labelled with the newly selected protocol — the
+        // "peers of the neighboring instance" race on laggy links.
+        if (window.connLoading) {
+            window.connPending = true;
+            return;
+        }
         window.connLoading = true;
         if (!isPoll) loading.style.display = ''; // silent refresh on polls
         emptyEl.classList.add('hidden');
         try {
             const data = await apiCall(`/api/servers/${SERVER_ID}/connections?protocol=${proto}`);
+            // Stale response: the user switched protocol while we awaited —
+            // drop it, the pending re-run below will fetch the right one.
+            if (proto !== document.getElementById('connProtoSelect').value) return;
             // The rename editor may have opened while this poll was in flight —
             // re-rendering now would destroy it mid-typing.
             if (isPoll && !force && listEl.querySelector('.rename-editor')) return;
@@ -3453,6 +3482,13 @@
         } finally {
             window.connLoading = false;
             highlightPeerFromQuery();
+            // A switch was requested mid-flight: load the currently selected
+            // protocol now (the stale response above was dropped).
+            if (window.connPending) {
+                window.connPending = false;
+                loadConnections();
+                return;
+            }
             // Live refresh while the connections section is visible; the
             // interval is opt-in per server (0 = off, management modal).
             clearTimeout(window.connPollTimer);
