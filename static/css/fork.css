@@ -1,0 +1,20 @@
+/* Fork overrides, loaded after style.css.
+   Kept in a separate file so upstream changes to style.css merge cleanly. */
+
+/* The "coming soon" promo tiles advertise features and a star-on-GitHub link
+   of the upstream repository; they are not part of this fork. */
+.promo-block {
+    display: none !important;
+}
+
+/* A modal is open: freeze what moves underneath it.
+   The backdrop blurs the page behind it, so every frame of an animation under
+   it (pulsing online avatars, ping dots, spinners) made the browser re-blur
+   the whole viewport, keeping the GPU busy enough to stutter video in other
+   tabs. Pausing those animations keeps the blur and paints it once.
+   Animations inside the open modal (spinners, progress) keep running. */
+body:has(.modal-backdrop.active) :not(.modal-backdrop.active, .modal-backdrop.active *),
+body:has(.modal-backdrop.active) :not(.modal-backdrop.active, .modal-backdrop.active *)::before,
+body:has(.modal-backdrop.active) :not(.modal-backdrop.active, .modal-backdrop.active *)::after {
+    animation-play-state: paused !important;
+}
